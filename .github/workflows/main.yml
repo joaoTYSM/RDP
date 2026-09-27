@@ -93,6 +93,7 @@ jobs:
           $url = "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe"
 
           Write-Host "Downloading Tailscale..."
+          Write-Host $url
 
           Invoke-WebRequest `
             -Uri $url `
@@ -120,7 +121,7 @@ jobs:
           $tailscale = "C:\Program Files\Tailscale\tailscale.exe"
 
           if (-not (Test-Path $tailscale)) {
-            throw "Tailscale executable was not found."
+            throw "Tailscale executable was not found after installation."
           }
 
           Write-Host "Tailscale installed successfully."
@@ -128,6 +129,8 @@ jobs:
       - name: Start Tailscale Service
         shell: powershell
         run: |
+          $tailscale = "C:\Program Files\Tailscale\tailscale.exe"
+
           $service = Get-Service `
             -Name "Tailscale" `
             -ErrorAction SilentlyContinue
@@ -156,7 +159,8 @@ jobs:
           Write-Host "TAILSCALE AUTHENTICATION"
           Write-Host "============================================"
           Write-Host ""
-          Write-Host "A Tailscale authentication URL should appear."
+          Write-Host "A Tailscale login URL should appear below."
+          Write-Host "Open that URL in your browser and authenticate."
           Write-Host ""
           Write-Host "Hostname: $hostname"
           Write-Host ""
@@ -214,97 +218,6 @@ jobs:
 
           Write-Host "RDP firewall rule configured for Tailscale."
 
-      - name: Install Mobile And Desktop Tools
-        shell: powershell
-        continue-on-error: true
-        run: |
-          Write-Host ""
-          Write-Host "============================================"
-          Write-Host "INSTALLING VM TOOLS"
-          Write-Host "============================================"
-          Write-Host ""
-
-          $packages = @(
-            "Microsoft.PowerToys",
-            "7zip.7zip",
-            "Microsoft.VisualStudioCode",
-            "Git.Git",
-            "VideoLAN.VLC",
-            "Google.Chrome"
-          )
-
-          foreach ($package in $packages) {
-            Write-Host ""
-            Write-Host "Installing: $package"
-
-            winget install `
-              --id $package `
-              --exact `
-              --source winget `
-              --silent `
-              --accept-package-agreements `
-              --accept-source-agreements `
-              --disable-interactivity
-
-            if ($LASTEXITCODE -eq 0) {
-              Write-Host "$package installed successfully."
-            }
-            else {
-              Write-Warning "Failed to install $package. Continuing..."
-            }
-          }
-
-          Write-Host ""
-          Write-Host "Desktop tools installation completed."
-
-      - name: Install Monect PC Remote
-        shell: powershell
-        continue-on-error: true
-        run: |
-          Write-Host ""
-          Write-Host "============================================"
-          Write-Host "INSTALLING MONect PC REMOTE"
-          Write-Host "============================================"
-          Write-Host ""
-
-          $installer = "$env:TEMP\monect.exe"
-
-          $url = "https://www.monect.com/pc-remote/download/"
-
-          try {
-            Write-Host "Opening Monect download page..."
-
-            Start-Process `
-              $url
-
-            Write-Host ""
-            Write-Host "Monect download page opened."
-            Write-Host "Install the Windows receiver if required."
-          }
-          catch {
-            Write-Warning "Could not open Monect download page."
-          }
-
-      - name: Prepare Windows For Remote Use
-        shell: powershell
-        run: |
-          Write-Host "Configuring Windows for remote use..."
-
-          Set-ItemProperty `
-            -Path "HKCU:\Control Panel\Desktop" `
-            -Name "ScreenSaveActive" `
-            -Value "0"
-
-          Set-ItemProperty `
-            -Path "HKCU:\Control Panel\Desktop" `
-            -Name "ScreenSaveTimeout" `
-            -Value "0"
-
-          powercfg /change monitor-timeout-ac 0
-          powercfg /change standby-timeout-ac 0
-
-          Write-Host "Power settings configured."
-
       - name: Verify RDP
         shell: powershell
         run: |
@@ -344,15 +257,6 @@ jobs:
           Write-Host "Password : $env:RDP_PASSWORD"
           Write-Host "Port     : 3389"
           Write-Host ""
-          Write-Host "Installed tools:"
-          Write-Host " - PowerToys"
-          Write-Host " - 7-Zip"
-          Write-Host " - Visual Studio Code"
-          Write-Host " - Git"
-          Write-Host " - VLC"
-          Write-Host " - Google Chrome"
-          Write-Host " - Monect PC Remote"
-          Write-Host ""
           Write-Host "Use the Tailscale IP as the computer address."
           Write-Host ""
           Write-Host "============================================"
@@ -367,3 +271,4 @@ jobs:
             Start-Sleep -Seconds 60
             Write-Host "RDP runner still active: $(Get-Date)"
           }
+          
