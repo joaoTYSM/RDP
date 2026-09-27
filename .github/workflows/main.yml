@@ -1,0 +1,369 @@
+name: RDP
+
+on:
+  workflow_dispatch:
+
+jobs:
+  secure-rdp:
+    runs-on: windows-latest
+    timeout-minutes: 350
+
+    steps:
+      - name: Configure RDP
+        shell: powershell
+        run: |
+          $rdpPath = 'HKLM:\System\CurrentControlSet\Control\Terminal Server'
+
+          Set-ItemProperty `
+            -Path $rdpPath `
+            -Name 'fDenyTSConnections' `
+            -Value 0
+
+          Enable-NetFirewallRule `
+            -DisplayGroup 'Remote Desktop'
+
+          Set-Service `
+            -Name TermService `
+            -StartupType Automatic
+
+          Start-Service `
+            -Name TermService
+
+          Write-Host "RDP configured."
+
+      - name: Create RDP User
+        shell: powershell
+        run: |
+          $username = "Skyro"
+
+          $characters = (
+            'abcdefghijklmnopqrstuvwxyz' +
+            'ABCDEFGHIJKLMNOPQRSTUVWXYZ' +
+            '0123456789'
+          ).ToCharArray()
+
+          $password = -join (
+            1..24 | ForEach-Object {
+              $characters | Get-Random
+            }
+          )
+
+          $securePassword = ConvertTo-SecureString `
+            $password `
+            -AsPlainText `
+            -Force
+
+          $existingUser = Get-LocalUser `
+            -Name $username `
+            -ErrorAction SilentlyContinue
+
+          if ($existingUser) {
+            Set-LocalUser `
+              -Name $username `
+              -Password $securePassword
+          }
+          else {
+            New-LocalUser `
+              -Name $username `
+              -Password $securePassword `
+              -PasswordNeverExpires `
+              -AccountNeverExpires
+          }
+
+          Add-LocalGroupMember `
+            -Group "Administrators" `
+            -Member $username `
+            -ErrorAction SilentlyContinue
+
+          Add-LocalGroupMember `
+            -Group "Remote Desktop Users" `
+            -Member $username `
+            -ErrorAction SilentlyContinue
+
+          "RDP_USERNAME=$username" >> $env:GITHUB_ENV
+          "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
+
+          Write-Host "RDP user created."
+          Write-Host "Username: $username"
+
+      - name: Install Tailscale
+        shell: powershell
+        run: |
+          $installer = "$env:TEMP\tailscale-setup.exe"
+          $url = "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe"
+
+          Write-Host "Downloading Tailscale..."
+
+          Invoke-WebRequest `
+            -Uri $url `
+            -OutFile $installer `
+            -UseBasicParsing
+
+          if (-not (Test-Path $installer)) {
+            throw "Tailscale installer was not downloaded."
+          }
+
+          Write-Host "Installing Tailscale..."
+
+          $process = Start-Process `
+            -FilePath $installer `
+            -ArgumentList "/quiet" `
+            -Wait `
+            -PassThru
+
+          if ($process.ExitCode -ne 0) {
+            throw "Tailscale installer failed with exit code $($process.ExitCode)."
+          }
+
+          Start-Sleep -Seconds 5
+
+          $tailscale = "C:\Program Files\Tailscale\tailscale.exe"
+
+          if (-not (Test-Path $tailscale)) {
+            throw "Tailscale executable was not found."
+          }
+
+          Write-Host "Tailscale installed successfully."
+
+      - name: Start Tailscale Service
+        shell: powershell
+        run: |
+          $service = Get-Service `
+            -Name "Tailscale" `
+            -ErrorAction SilentlyContinue
+
+          if (-not $service) {
+            throw "Tailscale service was not found."
+          }
+
+          if ($service.Status -ne "Running") {
+            Start-Service `
+              -Name "Tailscale"
+          }
+
+          Start-Sleep -Seconds 5
+
+          Write-Host "Tailscale service is running."
+
+      - name: Authenticate Tailscale
+        shell: powershell
+        run: |
+          $tailscale = "C:\Program Files\Tailscale\tailscale.exe"
+          $hostname = "github-rdp-$env:GITHUB_RUN_ID"
+
+          Write-Host ""
+          Write-Host "============================================"
+          Write-Host "TAILSCALE AUTHENTICATION"
+          Write-Host "============================================"
+          Write-Host ""
+          Write-Host "A Tailscale authentication URL should appear."
+          Write-Host ""
+          Write-Host "Hostname: $hostname"
+          Write-Host ""
+          Write-Host "============================================"
+          Write-Host ""
+
+          & $tailscale up `
+            --hostname="$hostname" `
+            --unattended=true
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Tailscale authentication failed with exit code $LASTEXITCODE."
+          }
+
+          Write-Host ""
+          Write-Host "Tailscale authentication completed."
+
+      - name: Get Tailscale IP
+        shell: powershell
+        run: |
+          $tailscale = "C:\Program Files\Tailscale\tailscale.exe"
+
+          $ip = & $tailscale ip -4
+
+          if (-not $ip) {
+            throw "Could not obtain Tailscale IPv4 address."
+          }
+
+          $ip = $ip.Trim()
+
+          "TAILSCALE_IP=$ip" >> $env:GITHUB_ENV
+
+          Write-Host ""
+          Write-Host "Tailscale IPv4: $ip"
+
+      - name: Configure RDP Firewall
+        shell: powershell
+        run: |
+          Disable-NetFirewallRule `
+            -DisplayGroup "Remote Desktop" `
+            -ErrorAction SilentlyContinue
+
+          Remove-NetFirewallRule `
+            -DisplayName "RDP-Tailscale-Only" `
+            -ErrorAction SilentlyContinue
+
+          New-NetFirewallRule `
+            -DisplayName "RDP-Tailscale-Only" `
+            -Direction Inbound `
+            -Action Allow `
+            -Protocol TCP `
+            -LocalPort 3389 `
+            -RemoteAddress "100.64.0.0/10" `
+            -Profile Any
+
+          Write-Host "RDP firewall rule configured for Tailscale."
+
+      - name: Install Mobile And Desktop Tools
+        shell: powershell
+        continue-on-error: true
+        run: |
+          Write-Host ""
+          Write-Host "============================================"
+          Write-Host "INSTALLING VM TOOLS"
+          Write-Host "============================================"
+          Write-Host ""
+
+          $packages = @(
+            "Microsoft.PowerToys",
+            "7zip.7zip",
+            "Microsoft.VisualStudioCode",
+            "Git.Git",
+            "VideoLAN.VLC",
+            "Google.Chrome"
+          )
+
+          foreach ($package in $packages) {
+            Write-Host ""
+            Write-Host "Installing: $package"
+
+            winget install `
+              --id $package `
+              --exact `
+              --source winget `
+              --silent `
+              --accept-package-agreements `
+              --accept-source-agreements `
+              --disable-interactivity
+
+            if ($LASTEXITCODE -eq 0) {
+              Write-Host "$package installed successfully."
+            }
+            else {
+              Write-Warning "Failed to install $package. Continuing..."
+            }
+          }
+
+          Write-Host ""
+          Write-Host "Desktop tools installation completed."
+
+      - name: Install Monect PC Remote
+        shell: powershell
+        continue-on-error: true
+        run: |
+          Write-Host ""
+          Write-Host "============================================"
+          Write-Host "INSTALLING MONect PC REMOTE"
+          Write-Host "============================================"
+          Write-Host ""
+
+          $installer = "$env:TEMP\monect.exe"
+
+          $url = "https://www.monect.com/pc-remote/download/"
+
+          try {
+            Write-Host "Opening Monect download page..."
+
+            Start-Process `
+              $url
+
+            Write-Host ""
+            Write-Host "Monect download page opened."
+            Write-Host "Install the Windows receiver if required."
+          }
+          catch {
+            Write-Warning "Could not open Monect download page."
+          }
+
+      - name: Prepare Windows For Remote Use
+        shell: powershell
+        run: |
+          Write-Host "Configuring Windows for remote use..."
+
+          Set-ItemProperty `
+            -Path "HKCU:\Control Panel\Desktop" `
+            -Name "ScreenSaveActive" `
+            -Value "0"
+
+          Set-ItemProperty `
+            -Path "HKCU:\Control Panel\Desktop" `
+            -Name "ScreenSaveTimeout" `
+            -Value "0"
+
+          powercfg /change monitor-timeout-ac 0
+          powercfg /change standby-timeout-ac 0
+
+          Write-Host "Power settings configured."
+
+      - name: Verify RDP
+        shell: powershell
+        run: |
+          Write-Host "Checking TermService..."
+
+          $service = Get-Service `
+            -Name TermService
+
+          if ($service.Status -ne "Running") {
+            Start-Service `
+              -Name TermService
+          }
+
+          Write-Host "Checking TCP 3389..."
+
+          $listening = Get-NetTCPConnection `
+            -LocalPort 3389 `
+            -State Listen `
+            -ErrorAction SilentlyContinue
+
+          if (-not $listening) {
+            throw "RDP is not listening on TCP 3389."
+          }
+
+          Write-Host "RDP is listening on TCP 3389."
+
+      - name: Display RDP Information
+        shell: powershell
+        run: |
+          Write-Host ""
+          Write-Host "============================================"
+          Write-Host "          WINDOWS RDP READY"
+          Write-Host "============================================"
+          Write-Host ""
+          Write-Host "Computer : $env:TAILSCALE_IP"
+          Write-Host "Username : $env:RDP_USERNAME"
+          Write-Host "Password : $env:RDP_PASSWORD"
+          Write-Host "Port     : 3389"
+          Write-Host ""
+          Write-Host "Installed tools:"
+          Write-Host " - PowerToys"
+          Write-Host " - 7-Zip"
+          Write-Host " - Visual Studio Code"
+          Write-Host " - Git"
+          Write-Host " - VLC"
+          Write-Host " - Google Chrome"
+          Write-Host " - Monect PC Remote"
+          Write-Host ""
+          Write-Host "Use the Tailscale IP as the computer address."
+          Write-Host ""
+          Write-Host "============================================"
+          Write-Host ""
+
+      - name: Keep Runner Alive
+        shell: powershell
+        run: |
+          Write-Host "RDP session is ready."
+
+          while ($true) {
+            Start-Sleep -Seconds 60
+            Write-Host "RDP runner still active: $(Get-Date)"
+          }
